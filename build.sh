@@ -1,2 +1,2 @@
 
-gcc ./src/main.c -o main -Wall -lraylib -Iinclude/
+g++ ./src/main.cc -o main -Wall  
