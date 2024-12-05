@@ -1,112 +1,114 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <pthread.h>
 
-#define WINDOW_SIZE 4096  // Tamaño de la ventana de búsqueda
-#define LOOKAHEAD_SIZE 16 // Tamaño de la ventana de anticipación
+#define N 1000  // Tamaño de la matriz
 
-// Estructura para cada hilo
+// Definir la matriz A, L y U
+double A[N][N];
+double L[N][N] = {0};
+double U[N][N];
+
+// Estructura para pasar parámetros a los hilos
 typedef struct {
-    char *data;
-    size_t start;
-    size_t end;
-    FILE *output_file;
-} thread_data_t;
+    int row_start;  // Fila de inicio para la eliminación
+    int row_end;    // Fila final para la eliminación
+    int i;          // Fila actual
+} LU_Thread_Data;
 
-// Estructura para almacenar las tuplas (offset, longitud, símbolo)
-typedef struct {
-    int offset;
-    int length;
-    char symbol;
-} lz77_tuple;
-
-// Función que comprime una sección del archivo
-void* compress_section(void *arg) {
-    thread_data_t *data = (thread_data_t *)arg;
-    char *input_data = data->data;
-    size_t start = data->start;
-    size_t end = data->end;
-    FILE *output_file = data->output_file;
-    
-    // Implementación básica de la compresión LZ77
-    for (size_t i = start; i < end; i++) {
-        int offset = -1, length = 0;
-        char symbol = input_data[i];
-
-        // Buscar coincidencias en la ventana de búsqueda
-        for (int j = (i - WINDOW_SIZE > 0 ? i - WINDOW_SIZE : 0); j < i; j++) {
-            int match_length = 0;
-            while (input_data[j + match_length] == input_data[i + match_length] && match_length < LOOKAHEAD_SIZE) {
-                match_length++;
-            }
-
-            if (match_length > length) {
-                length = match_length;
-                offset = i - j;
-            }
+void generate_matrix(double matrix[N][N]) {
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            matrix[i][j] = (double)(rand() % 100);
         }
-
-        // Escribir tupla (offset, longitud, símbolo) en el archivo comprimido
-        fwrite(&offset, sizeof(int), 1, output_file);
-        fwrite(&length, sizeof(int), 1, output_file);
-        fwrite(&symbol, sizeof(char), 1, output_file);
     }
-
-    return NULL;
 }
 
-// Función principal
-int main(int argc, char** argv) {
-    // Abrir el archivo de entrada
-    FILE *input_file = fopen("large_input.txt", "r");
-    if (input_file == NULL) {
-        perror("Error opening input file");
-        return 1;
+void print_matrix(double matrix[N][N]) {
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            printf("%.2f ", matrix[i][j]);
+        }
+        printf("\n");
     }
+}
 
-    // Obtener el tamaño del archivo
-    fseek(input_file, 0, SEEK_END);
-    size_t file_size = ftell(input_file);
-    fseek(input_file, 0, SEEK_SET);
-
-    // Leer todo el contenido del archivo en un buffer
-    char *data = malloc(file_size);
-    fread(data, sizeof(char), file_size, input_file);
-    fclose(input_file);
-
-    // Abrir el archivo de salida comprimido
-    FILE *output_file = fopen("compressed_output.lz77", "w");
-    if (output_file == NULL) {
-        perror("Error opening output file");
-        return 1;
-    }
-
+// Función de eliminación para una fila
+void* gaussian_elimination(void* arg) {
+    LU_Thread_Data* data = (LU_Thread_Data*) arg;
+    int i = data->i;
     
-    int NUM_THREADS = atoi(argv[1]);
-
-    pthread_t threads[NUM_THREADS];
-    thread_data_t thread_data[NUM_THREADS];
-
-    size_t block_size = file_size / NUM_THREADS;
-    for (int i = 0; i < NUM_THREADS; i++) {
-        thread_data[i].data = data;
-        thread_data[i].start = i * block_size;
-        thread_data[i].end = (i == NUM_THREADS - 1) ? file_size : (i + 1) * block_size;
-        thread_data[i].output_file = output_file;
-
-        pthread_create(&threads[i], NULL, compress_section, &thread_data[i]);
+    // Realizar la eliminación sobre las filas j = row_start a row_end
+    for (int j = data->row_start; j < data->row_end; j++) {
+        L[j][i] = A[j][i] / A[i][i];
+        for (int k = i; k < N; k++) {
+            A[j][k] -= L[j][i] * A[i][k];
+        }
     }
 
-    // Esperar a que todos los hilos terminen
-    for (int i = 0; i < NUM_THREADS; i++) {
-        pthread_join(threads[i], NULL);
+    pthread_exit(NULL);
+}
+
+// Factorización LU
+void lu_decomposition(int n_threads) {
+    for (int i = 0; i < N; i++) {
+        // Inicializamos la diagonal de L a 1
+        L[i][i] = 1;
+
+        // Creamos los hilos para cada iteración de eliminación
+        pthread_t threads[n_threads];  // Hilos para paralelización
+
+        // Dividir el trabajo entre hilos
+        for (int j = i + 1; j < n_threads; j++) {
+            LU_Thread_Data* data = (LU_Thread_Data*) malloc(sizeof(LU_Thread_Data));
+            data->i = i;
+            data->row_start = j;
+            data->row_end = j + 1;
+
+            // Crear hilo para realizar la eliminación en la fila j
+            pthread_create(&threads[j], NULL, gaussian_elimination, (void*) data);
+        }
+
+        // Esperar que todos los hilos terminen
+        for (int j = i + 1; j < N; j++) {
+            pthread_join(threads[j], NULL);
+        }
+    }
+}
+
+int main(int argc, char** argv) {
+    // Rellenar la matriz A con valores aleatorios
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            A[i][j] = rand() % 100;
+        }
     }
 
-    // Cerrar el archivo de salida y liberar recursos
-    fclose(output_file);
-    free(data);
+    // Realizar la factorización LU
+    lu_decomposition(atoi(argv[1]));
 
-    printf("Compresión completada.\n");
+    // Imprimir una parte de las matrices L y U
+    printf("Matriz L:\n");
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            if (i <= j)
+                printf("%f ", L[i][j]);
+            else
+                printf("0 ");
+        }
+        printf("\n");
+    }
+
+    printf("Matriz U:\n");
+    for (int i = 0; i < N; i++) {
+        for (int j = 0; j < N; j++) {
+            if (i <= j)
+                printf("%f ", A[i][j]);
+            else
+                printf("0 ");
+        }
+        printf("\n");
+    }
+
     return 0;
 }
